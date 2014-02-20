@@ -1,7 +1,7 @@
 var fez = require("../../src/main.js"),
     Promise = require("bluebird");
 
-function nop() {}
+function nop() { return null; }
 
 exports.build = function(spec) {
   spec.with("a").each(function(file) {

@@ -299,72 +299,36 @@ function evaluateOperation(context, node) {
   if(node.rule.stage.multi) node.rule.stage.proxy._lazies = node.lazies;
   else node.rule.stage.proxy._setFile(node.stageInputs[0].lazy);
 
-  var primaryInputPromise;
-  if(node.rule.primaryInput instanceof ProxyFileList) primaryInputPromise = node.rule.primaryInput.names();
-  else if(node.rule.primaryInput instanceof ProxyFile) primaryInputPromise = Promise.resolve(node.rule.primaryInput._inspect().getFilename());
-  else primaryInputPromise = node.rule.primaryInput();
-
-  primaryInputPromise = Promise.cast(primaryInputPromise).then(function(resolved) {
-    var primaryInputs = [];
-
-    toArray(resolved).forEach(function(file) {
-      var input = nodeForFile(context, file);
-      input.outputs.push(node);
-      primaryInputs.push(input);
-    });
-
-    return primaryInputs;
-  });
-
-  var hasOutput = false;
+  var hasOutput = false, outNode;
   if(typeof node.rule.output === "string") {
-    createOutNode(node.rule.output);
-  } else if(node.rule.output !== undefined) {
-    createOutNode(node.rule.output());
-  }
-
-  var outNode;
-  function createOutNode(output) {
+    outNode = createOutNode(context, node, node.rule.output);
     hasOutput = true;
-    outNode = nodeForFile(context, output);
-    node.outputs.push(outNode);
-    outNode.inputs.push(node);
-    node.output = outNode;
+  } else if(node.rule.output !== undefined) {
+    outNode = createOutNode(context, node, node.rule.output());
+    hasOutput = true;
   }
 
-  var secondaryInputPromise;
-  secondaryInputPromise = node.rule.secondaryInputs();
-
-  secondaryInputPromise = Promise.cast(secondaryInputPromise).then(function(resolved) {
-    var secondaryInputs = resolved.map(function(file) {
-      var input = nodeForFile(context, file);
-      input.complete();
-      input.outputs.push(node);
-
-      return input;
-    });
-
-    if(!hasOutput) {
-      var hash = crypto.createHash("sha256");
-
-      var inputs = (node.primaryInput ? [node.primaryInput.file] : []).concat(secondaryInputs.map(function(n) { return n.file; }));
-      inputs.forEach(function(input) {
-        hash.update(input);
-      });
-
-      var filename = ".fez/" + (node.rule.fn.name === "" ? "" : node.rule.fn.name + ".") + hash.digest("base64").replace("+", "").replace("/", "").substr(0, 6) + "~";
-      createOutNode(filename);
-    }
-
-    return secondaryInputs;
-  });
-
+  var primaryInputPromise = getPrimaryInputPromise(node, context);
+  var secondaryInputPromise = getSecondaryInputPromise(node, context);
+  
   if(!node.rule.stage.multi) node.rule.stage.proxy._setFile(undefined);
   else node.rule.stage.proxy._lazies = undefined;
 
   node.promise = Promise.all([primaryInputPromise, secondaryInputPromise]).spread(function(primaryInputs, secondaryInputs) {
     node.primaryInputs = primaryInputs;
     node.secondaryInputs = secondaryInputs;
+
+    if(!hasOutput) {
+      var hash = crypto.createHash("sha256");
+
+      var inputs = primaryInputs.map(file).concat(secondaryInputs.map(file));
+      inputs.forEach(function(input) {
+        hash.update(input);
+      });
+
+      var filename = ".fez/" + (node.rule.fn.name === "" ? "" : node.rule.fn.name + ".") + hash.digest("base64").replace("+", "").replace("/", "").substr(0, 6) + "~";
+      outNode = createOutNode(context, node, filename);
+    }
 
     return Promise.all(flatten([node.primaryInputs.map(promise), secondaryInputs.map(promise)])).then(function() {
       return performOperation(node, context).then(function(val) {
@@ -375,6 +339,50 @@ function evaluateOperation(context, node) {
   });
 
   return true;
+}
+
+function createOutNode(context, node, output) {
+  var outNode = nodeForFile(context, output);
+  node.outputs.push(outNode);
+  outNode.inputs.push(node);
+  node.output = outNode;
+  return outNode;
+}
+
+function getPrimaryInputPromise(node, context) {
+  var primaryInputPromise;
+  if(node.rule.primaryInput instanceof ProxyFileList) primaryInputPromise = node.rule.primaryInput.names();
+  else if(node.rule.primaryInput instanceof ProxyFile) primaryInputPromise = Promise.resolve(node.rule.primaryInput._inspect().getFilename());
+  else primaryInputPromise = node.rule.primaryInput();
+
+  return Promise.cast(primaryInputPromise).then(function(resolved) {
+    var primaryInputs = [];
+
+    toArray(resolved).forEach(function(file) {
+      var input = nodeForFile(context, file);
+      input.outputs.push(node);
+      primaryInputs.push(input);
+    });
+
+    return primaryInputs;
+  });
+}
+
+function getSecondaryInputPromise(node, context) {
+  var secondaryInputPromise;
+  secondaryInputPromise = node.rule.secondaryInputs();
+
+  return Promise.cast(secondaryInputPromise).then(function(resolved) {
+    var secondaryInputs = resolved.map(function(file) {
+      var input = nodeForFile(context, file);
+      input.complete();
+      input.outputs.push(node);
+
+      return input;
+    });
+
+    return secondaryInputs;
+  });
 }
 
 function file(node) {
@@ -437,6 +445,8 @@ function processOutput(out, output, inputs, context) {
     printCreating(output);
     return writep(output, out);
   } else if(out === undefined) {
+    return writep(output, new Buffer(0));
+  } else if(out === null) {
     printCreating(output);
     return writep(output, new Buffer(0));
   } else if(out === true) {
